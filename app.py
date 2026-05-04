@@ -16,7 +16,6 @@ from reportlab.platypus import (
     Spacer,
     Table,
     TableStyle,
-    PageBreak,
     Image,
 )
 
@@ -50,28 +49,28 @@ st.markdown(
     .main .block-container {
         padding-top: 2rem;
         padding-bottom: 4rem;
-        max-width: 1200px;
+        max-width: 1240px;
     }
 
     .hero {
-        background: linear-gradient(135deg, #0f766e 0%, #134e4a 55%, #0f172a 100%);
+        background: linear-gradient(135deg, #0f766e 0%, #134e4a 48%, #0f172a 100%);
         padding: 2.2rem 2.4rem;
-        border-radius: 28px;
+        border-radius: 30px;
         color: white;
-        box-shadow: 0 24px 60px rgba(15, 118, 110, 0.22);
+        box-shadow: 0 24px 60px rgba(15, 118, 110, 0.24);
         margin-bottom: 1.6rem;
     }
 
     .hero h1 {
         font-size: 2.45rem;
-        margin-bottom: 0.4rem;
+        margin-bottom: 0.45rem;
         line-height: 1.08;
     }
 
     .hero p {
-        color: rgba(255, 255, 255, 0.82);
+        color: rgba(255, 255, 255, 0.84);
         font-size: 1.05rem;
-        max-width: 780px;
+        max-width: 840px;
     }
 
     .badge-row {
@@ -99,31 +98,30 @@ st.markdown(
         margin-bottom: 1rem;
     }
 
-    .metric-card {
-        background: white;
+    .insight {
+        background: #f8fafc;
         border: 1px solid #e2e8f0;
-        border-radius: 22px;
-        padding: 1rem 1.1rem;
-        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+        border-left: 5px solid #0f766e;
+        border-radius: 18px;
+        padding: 0.85rem 1rem;
+        margin-bottom: 0.75rem;
     }
 
-    .muted {
+    .recommendation-high {
+        border-left: 5px solid #dc2626;
+    }
+
+    .recommendation-medium {
+        border-left: 5px solid #f59e0b;
+    }
+
+    .recommendation-low {
+        border-left: 5px solid #0f766e;
+    }
+
+    .small-muted {
         color: #64748b;
-    }
-
-    .risk-high {
-        color: #b91c1c;
-        font-weight: 700;
-    }
-
-    .risk-medium {
-        color: #b45309;
-        font-weight: 700;
-    }
-
-    .risk-low {
-        color: #047857;
-        font-weight: 700;
+        font-size: 0.92rem;
     }
 
     div[data-testid="stProgress"] > div > div > div > div {
@@ -192,17 +190,24 @@ def is_valid_email(email: str) -> bool:
 
 
 def generate_dummy_load_profile() -> pd.DataFrame:
-    rng = pd.date_range("2026-01-01 00:00", periods=7 * 24 * 4, freq="15min")
+    rng = pd.date_range("2026-01-01 00:00", periods=21 * 24 * 4, freq="15min")
     hours = rng.hour + rng.minute / 60
     weekday = rng.weekday
 
-    base = 72 + np.random.normal(0, 3, len(rng))
-    production = np.where((weekday < 5) & (hours >= 6) & (hours <= 22), 145, 0)
-    cycles = 38 * (np.sin(np.arange(len(rng)) / 5.5) > 0.35).astype(int)
+    base = 68 + np.random.normal(0, 2.5, len(rng))
+    shift_load = np.where((weekday < 5) & (hours >= 6) & (hours <= 22), 135, 0)
+    saturday_shift = np.where((weekday == 5) & (hours >= 7) & (hours <= 14), 80, 0)
+
+    cycle_a = 34 * (np.sin(np.arange(len(rng)) / 5.2) > 0.35).astype(int)
+    cycle_b = 22 * (np.sin(np.arange(len(rng)) / 13.0) > 0.70).astype(int)
+    random_noise = np.random.normal(0, 4, len(rng))
+
     peaks = np.zeros(len(rng))
-    peaks[80:90] += 55
-    peaks[280:292] += 70
-    power = base + production + cycles + peaks + np.random.normal(0, 5, len(rng))
+    for start in [180, 455, 890, 1280, 1680]:
+        peaks[start : start + 10] += np.linspace(20, 85, 10)
+
+    weekend_standby = np.where(weekday >= 5, 18, 0)
+    power = base + shift_load + saturday_shift + cycle_a + cycle_b + peaks + weekend_standby + random_noise
     power = np.maximum(power, 35)
 
     return pd.DataFrame({"timestamp": rng, "power_kw": power.round(2)})
@@ -220,13 +225,13 @@ def read_load_profile(file) -> pd.DataFrame:
     lower_cols = {c.lower().strip(): c for c in df.columns}
 
     time_col = None
-    for candidate in ["timestamp", "time", "datetime", "date", "zeit", "datum"]:
+    for candidate in ["timestamp", "time", "datetime", "date", "zeit", "datum", "zeitstempel"]:
         if candidate in lower_cols:
             time_col = lower_cols[candidate]
             break
 
     power_col = None
-    for candidate in ["power_kw", "leistung", "kw", "load", "lastgang", "power"]:
+    for candidate in ["power_kw", "leistung", "kw", "load", "lastgang", "power", "p"]:
         if candidate in lower_cols:
             power_col = lower_cols[candidate]
             break
@@ -243,12 +248,46 @@ def read_load_profile(file) -> pd.DataFrame:
     result["power_kw"] = pd.to_numeric(result["power_kw"], errors="coerce")
     result = result.dropna().sort_values("timestamp")
 
+    if result.empty:
+        raise ValueError("Keine gültigen Zeitstempel-/Leistungsdaten gefunden.")
+
     return result
+
+
+def classify_production_window(df: pd.DataFrame) -> pd.Series:
+    return (df["weekday"] < 5) & (df["hour_float"] >= 6) & (df["hour_float"] <= 22)
+
+
+def detect_cycles(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    smooth = result["power_kw"].rolling(8, min_periods=1, center=True).mean()
+    threshold = smooth.quantile(0.72)
+    result["cycle_active"] = smooth > threshold
+    result["cycle_start"] = result["cycle_active"].astype(int).diff().fillna(0).eq(1)
+    return result
+
+
+def build_heatmap_data(df: pd.DataFrame) -> pd.DataFrame:
+    heat = df.copy()
+    heat["weekday_name"] = heat["timestamp"].dt.day_name()
+    heat["hour"] = heat["timestamp"].dt.hour
+    pivot = heat.pivot_table(index="weekday", columns="hour", values="power_kw", aggfunc="mean")
+    pivot = pivot.reindex(index=list(range(7)), columns=list(range(24)))
+    pivot.index = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+    return pivot
+
+
+def get_top_peaks(df: pd.DataFrame, n: int = 5) -> pd.DataFrame:
+    peaks = df.nlargest(n, "power_kw")[["timestamp", "power_kw"]].copy()
+    peaks["timestamp"] = peaks["timestamp"].dt.strftime("%d.%m.%Y %H:%M")
+    peaks.columns = ["Zeitpunkt", "Leistung [kW]"]
+    return peaks
 
 
 def analyze_load_profile(df: pd.DataFrame, production_data: dict, energy_data: dict) -> dict:
     df = df.copy()
     df["hour"] = df["timestamp"].dt.hour
+    df["hour_float"] = df["timestamp"].dt.hour + df["timestamp"].dt.minute / 60
     df["weekday"] = df["timestamp"].dt.weekday
     df["date"] = df["timestamp"].dt.date
 
@@ -257,6 +296,8 @@ def analyze_load_profile(df: pd.DataFrame, production_data: dict, energy_data: d
         median_interval_hours = 0.25
 
     df["energy_kwh"] = df["power_kw"] * median_interval_hours
+    df["is_production_time"] = classify_production_window(df)
+    df = detect_cycles(df)
 
     total_energy = df["energy_kwh"].sum()
     peak_power = df["power_kw"].max()
@@ -264,49 +305,128 @@ def analyze_load_profile(df: pd.DataFrame, production_data: dict, energy_data: d
     avg_power = df["power_kw"].mean()
     load_factor = avg_power / peak_power if peak_power else 0
 
-    threshold = df["power_kw"].rolling(8, min_periods=1).mean().quantile(0.72)
-    df["production_cycle"] = df["power_kw"].rolling(8, min_periods=1).mean() > threshold
+    production_energy = df.loc[df["is_production_time"], "energy_kwh"].sum()
+    non_production_energy = total_energy - production_energy
+    non_production_share = non_production_energy / total_energy if total_energy else 0
 
-    transitions = df["production_cycle"].astype(int).diff().fillna(0)
-    detected_cycles = int((transitions == 1).sum())
+    detected_cycles = int(df["cycle_start"].sum())
+    cycle_energy = df.loc[df["cycle_active"], "energy_kwh"].sum()
+    cycle_energy_share = cycle_energy / total_energy if total_energy else 0
 
-    non_prod = df[(df["weekday"] >= 5) | (df["hour"] < 6) | (df["hour"] > 22)]
-    non_prod_energy = non_prod["energy_kwh"].sum()
-    non_prod_share = non_prod_energy / total_energy if total_energy else 0
+    daily_energy = df.groupby("date")["energy_kwh"].sum().reset_index()
+    weekday_profile = df.groupby("weekday")["power_kw"].mean()
+    heatmap_data = build_heatmap_data(df)
+    top_peaks = get_top_peaks(df)
 
     annual_output = production_data.get("annual_output", 100000) or 100000
-    energy_per_unit = total_energy / max(annual_output / 52, 1)
+    analyzed_days = max((df["timestamp"].max() - df["timestamp"].min()).days + 1, 1)
+    annualized_energy = total_energy / analyzed_days * 365
+    estimated_units_period = annual_output / 365 * analyzed_days
+    energy_per_unit = total_energy / max(estimated_units_period, 1)
 
     price = energy_data.get("electricity_price", 0.22) or 0.22
-    estimated_savings_kwh = total_energy * min(0.18, max(0.05, non_prod_share * 0.45))
+    peak_price = energy_data.get("peak_price", 120.0) or 120.0
+
+    baseline_saving_rate = min(0.22, max(0.04, non_production_share * 0.42))
+    estimated_savings_kwh = total_energy * baseline_saving_rate
     estimated_savings_eur = estimated_savings_kwh * price
 
+    avoidable_peak_kw = max(0, peak_power - df["power_kw"].quantile(0.95))
+    peak_savings_eur_year = avoidable_peak_kw * peak_price
+
+    co2_factor_kg_per_kwh = 0.38
+    estimated_co2_savings_t = estimated_savings_kwh * co2_factor_kg_per_kwh / 1000
+
     recommendations = []
-    if non_prod_share > 0.22:
-        recommendations.append("Grundlast außerhalb der Produktionszeiten prüfen und Abschaltkonzepte für Nebenaggregate ableiten.")
+
+    def add_recommendation(priority, title, reason, impact):
+        recommendations.append({
+            "priority": priority,
+            "title": title,
+            "reason": reason,
+            "impact": impact,
+        })
+
+    if non_production_share > 0.25:
+        add_recommendation(
+            "hoch",
+            "Grundlast außerhalb der Produktion senken",
+            "Ein erheblicher Anteil des Energieverbrauchs liegt außerhalb typischer Produktionszeiten.",
+            "Abschaltmatrix für Druckluft, Pumpen, Absaugung, Temperierung und Standby-Verbrauch aufbauen.",
+        )
+    elif non_production_share > 0.15:
+        add_recommendation(
+            "mittel",
+            "Nicht-Produktionszeiten prüfen",
+            "Der Verbrauch außerhalb typischer Produktionszeiten ist relevant, aber nicht extrem.",
+            "Wochenend- und Nachtlast getrennt messen und Abschaltfenster definieren.",
+        )
+
     if load_factor < 0.55:
-        recommendations.append("Lastspitzen analysieren und zeitliche Entzerrung energieintensiver Prozesse prüfen.")
-    if base_load > avg_power * 0.45:
-        recommendations.append("Hohe Grundlast identifiziert: Druckluft, Pumpen, Absaugung, Temperierung und Standby-Verbrauch priorisieren.")
-    if detected_cycles > 12:
-        recommendations.append("Viele Produktionszyklen erkannt: Zyklusabhängige Energiekennzahlen je Produktgruppe aufbauen.")
+        add_recommendation(
+            "hoch",
+            "Lastspitzenmanagement einführen",
+            "Der Lastfaktor deutet auf ausgeprägte Leistungsspitzen hin.",
+            "Gleichzeitiges Anfahren energieintensiver Anlagen vermeiden und Startsequenzen optimieren.",
+        )
+    elif load_factor < 0.68:
+        add_recommendation(
+            "mittel",
+            "Lastspitzen überwachen",
+            "Einzelne Spitzen können Leistungspreise erhöhen.",
+            "Peak-Alarm im Energiemonitoring einrichten und Hauptverursacher identifizieren.",
+        )
+
+    if base_load > avg_power * 0.42:
+        add_recommendation(
+            "hoch",
+            "Hohe Grundlast technisch auflösen",
+            "Die Grundlast ist im Verhältnis zur mittleren Leistung hoch.",
+            "Maschinen im Standby, Leckagen im Druckluftsystem und dauerhaft laufende Nebenaggregate priorisieren.",
+        )
+
+    if detected_cycles > analyzed_days * 2:
+        add_recommendation(
+            "mittel",
+            "Zyklusbezogene Energiekennzahlen einführen",
+            "Viele wiederkehrende Produktionszyklen wurden im Lastgang erkannt.",
+            "Energie pro Zyklus, Produktgruppe oder Charge berechnen und mit Qualitäts-/Ausschussdaten verbinden.",
+        )
+
     if not recommendations:
-        recommendations.append("Keine ausgeprägigen Auffälligkeiten erkannt. Nächster Schritt: Feinere Segmentierung nach Linie, Produkt und Schicht.")
+        add_recommendation(
+            "niedrig",
+            "Datenbasis verfeinern",
+            "Im aggregierten Lastgang zeigen sich keine starken Auffälligkeiten.",
+            "Messung nach Linien, Maschinen oder Medien auflösen, um versteckte Potenziale sichtbar zu machen.",
+        )
+
+    priority_order = {"hoch": 0, "mittel": 1, "niedrig": 2}
+    recommendations = sorted(recommendations, key=lambda item: priority_order[item["priority"]])
 
     return {
         "df": df,
         "total_energy": total_energy,
+        "annualized_energy": annualized_energy,
         "peak_power": peak_power,
         "base_load": base_load,
         "avg_power": avg_power,
         "load_factor": load_factor,
         "detected_cycles": detected_cycles,
-        "non_prod_energy": non_prod_energy,
-        "non_prod_share": non_prod_share,
+        "cycle_energy_share": cycle_energy_share,
+        "non_production_energy": non_production_energy,
+        "non_production_share": non_production_share,
         "energy_per_unit": energy_per_unit,
         "estimated_savings_kwh": estimated_savings_kwh,
         "estimated_savings_eur": estimated_savings_eur,
+        "estimated_co2_savings_t": estimated_co2_savings_t,
+        "peak_savings_eur_year": peak_savings_eur_year,
+        "top_peaks": top_peaks,
+        "daily_energy": daily_energy,
+        "weekday_profile": weekday_profile,
+        "heatmap_data": heatmap_data,
         "recommendations": recommendations,
+        "analyzed_days": analyzed_days,
     }
 
 
@@ -319,15 +439,63 @@ def fig_to_buffer(fig) -> io.BytesIO:
 
 def create_load_plot(df: pd.DataFrame) -> io.BytesIO:
     fig, ax = plt.subplots(figsize=(10.5, 3.5))
-    ax.plot(df["timestamp"], df["power_kw"], linewidth=1.2)
-    ax.set_title("Lastgang mit Leistungsaufnahme")
+    ax.plot(df["timestamp"], df["power_kw"], linewidth=1.1, label="Leistung")
+    ax.scatter(df.loc[df["cycle_start"], "timestamp"], df.loc[df["cycle_start"], "power_kw"], s=12, label="Zyklusstart")
+    ax.axhline(df["power_kw"].quantile(0.1), linestyle="--", linewidth=1, label="Grundlastniveau")
+    ax.set_title("Lastgang mit erkannten Produktionszyklen")
     ax.set_xlabel("Zeit")
     ax.set_ylabel("Leistung [kW]")
     ax.grid(True, alpha=0.28)
+    ax.legend(loc="upper right", fontsize=8)
     fig.autofmt_xdate()
     buffer = fig_to_buffer(fig)
     plt.close(fig)
     return buffer
+
+
+def create_daily_energy_plot(daily_energy: pd.DataFrame) -> io.BytesIO:
+    fig, ax = plt.subplots(figsize=(10.5, 3.2))
+    ax.bar(pd.to_datetime(daily_energy["date"]), daily_energy["energy_kwh"])
+    ax.set_title("Täglicher Energieverbrauch")
+    ax.set_xlabel("Datum")
+    ax.set_ylabel("Energie [kWh]")
+    ax.grid(True, axis="y", alpha=0.28)
+    fig.autofmt_xdate()
+    buffer = fig_to_buffer(fig)
+    plt.close(fig)
+    return buffer
+
+
+def create_heatmap_plot(heatmap_data: pd.DataFrame) -> io.BytesIO:
+    fig, ax = plt.subplots(figsize=(10.5, 3.5))
+    image = ax.imshow(heatmap_data.values, aspect="auto")
+    ax.set_title("Lastprofil-Heatmap: Wochentag x Stunde")
+    ax.set_xlabel("Stunde")
+    ax.set_ylabel("Wochentag")
+    ax.set_xticks(range(24))
+    ax.set_yticks(range(7))
+    ax.set_yticklabels(heatmap_data.index)
+    fig.colorbar(image, ax=ax, label="Ø Leistung [kW]")
+    buffer = fig_to_buffer(fig)
+    plt.close(fig)
+    return buffer
+
+
+def make_table(rows):
+    table = Table(rows, colWidths=[6.3 * cm, 9.4 * cm])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#ecfdf5")),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#0f172a")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd5e1")),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("PADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    return table
 
 
 def create_pdf_report(company_data, production_data, energy_data, process_data, analysis) -> bytes:
@@ -345,64 +513,64 @@ def create_pdf_report(company_data, production_data, energy_data, process_data, 
     styles.add(ParagraphStyle(name="HeroTitle", fontSize=22, leading=26, spaceAfter=14, textColor=colors.HexColor("#0f766e")))
     styles.add(ParagraphStyle(name="Subtle", fontSize=9, leading=12, textColor=colors.HexColor("#64748b")))
     styles.add(ParagraphStyle(name="Section", fontSize=14, leading=18, spaceBefore=14, spaceAfter=8, textColor=colors.HexColor("#134e4a")))
+    styles.add(ParagraphStyle(name="Rec", fontSize=10, leading=13, spaceAfter=7))
 
     story = []
     story.append(Paragraph("Energieeffizienz-Analyse Produktion", styles["HeroTitle"]))
     story.append(Paragraph(f"Automatisch generierter Demo-Bericht vom {datetime.now().strftime('%d.%m.%Y, %H:%M')} Uhr", styles["Subtle"]))
     story.append(Spacer(1, 0.45 * cm))
 
+    story.append(Paragraph("Executive Summary", styles["Section"]))
+    summary = (
+        f"Im analysierten Zeitraum von {analysis['analyzed_days']} Tagen wurden "
+        f"{analysis['total_energy']:,.0f} kWh Energieverbrauch ausgewertet. "
+        f"Die maximale Leistung betrug {analysis['peak_power']:,.1f} kW. "
+        f"Das initial geschätzte Einsparpotenzial liegt bei {analysis['estimated_savings_kwh']:,.0f} kWh "
+        f"bzw. {analysis['estimated_savings_eur']:,.0f} EUR im Analysezeitraum."
+    )
+    story.append(Paragraph(summary, styles["BodyText"]))
+
     company_rows = [
         ["Unternehmen", company_data.get("company_name", "-")],
         ["Branche", company_data.get("industry", "-")],
         ["Standort", company_data.get("location", "-")],
         ["Produktionsmodell", production_data.get("shift_model", "-")],
+        ["Messkonzept", energy_data.get("metering_level", "-")],
     ]
     story.append(Paragraph("1. Kontext", styles["Section"]))
     story.append(make_table(company_rows))
 
     metric_rows = [
         ["Gesamtenergie im Analysezeitraum", f"{analysis['total_energy']:,.0f} kWh"],
+        ["Annualisierter Verbrauch", f"{analysis['annualized_energy']:,.0f} kWh/Jahr"],
         ["Maximale Leistung", f"{analysis['peak_power']:,.1f} kW"],
         ["Grundlast", f"{analysis['base_load']:,.1f} kW"],
         ["Lastfaktor", f"{analysis['load_factor']:.2f}"],
+        ["Nicht-Produktionsanteil", f"{analysis['non_production_share'] * 100:.1f} %"],
         ["Erkannte Produktionszyklen", f"{analysis['detected_cycles']}"] ,
         ["Energie je Einheit", f"{analysis['energy_per_unit']:.2f} kWh/Stück"],
         ["Geschätztes Einsparpotenzial", f"{analysis['estimated_savings_kwh']:,.0f} kWh / {analysis['estimated_savings_eur']:,.0f} EUR"],
+        ["Geschätzte CO2-Reduktion", f"{analysis['estimated_co2_savings_t']:.1f} t CO2"],
     ]
     story.append(Paragraph("2. Energiekennzahlen", styles["Section"]))
     story.append(make_table(metric_rows))
 
-    plot_buffer = create_load_plot(analysis["df"])
-    story.append(Paragraph("3. Lastgang", styles["Section"]))
-    story.append(Image(plot_buffer, width=16 * cm, height=5.2 * cm))
+    story.append(Paragraph("3. Lastgang und Muster", styles["Section"]))
+    story.append(Image(create_load_plot(analysis["df"]), width=16 * cm, height=5.2 * cm))
+    story.append(Spacer(1, 0.25 * cm))
+    story.append(Image(create_daily_energy_plot(analysis["daily_energy"]), width=16 * cm, height=4.8 * cm))
+    story.append(Spacer(1, 0.25 * cm))
+    story.append(Image(create_heatmap_plot(analysis["heatmap_data"]), width=16 * cm, height=5.1 * cm))
 
-    story.append(Paragraph("4. Erste Handlungsempfehlungen", styles["Section"]))
+    story.append(Paragraph("4. Priorisierte Handlungsempfehlungen", styles["Section"]))
     for rec in analysis["recommendations"]:
-        story.append(Paragraph(f"• {rec}", styles["BodyText"]))
-        story.append(Spacer(1, 0.12 * cm))
+        story.append(Paragraph(f"<b>{rec['priority'].upper()}: {rec['title']}</b><br/>{rec['reason']}<br/><i>{rec['impact']}</i>", styles["Rec"]))
 
-    story.append(Spacer(1, 0.5 * cm))
+    story.append(Spacer(1, 0.4 * cm))
     story.append(Paragraph("Hinweis: Dieser Bericht ist ein Dummy-Beispiel und ersetzt keine detaillierte Energieauditierung.", styles["Subtle"]))
 
     doc.build(story)
     return buffer.getvalue()
-
-
-def make_table(rows):
-    table = Table(rows, colWidths=[6.2 * cm, 9.5 * cm])
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#ecfdf5")),
-                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#0f172a")),
-                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd5e1")),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("PADDING", (0, 0), (-1, -1), 7),
-            ]
-        )
-    )
-    return table
 
 
 def render_header():
@@ -411,14 +579,15 @@ def render_header():
         <div class="hero">
             <h1>⚡ Energieeffizienz-Check für Fertigungsunternehmen</h1>
             <p>
-                Identifizieren Sie Energieeffizienzpotenziale anhand produktionsnaher Daten, Lastgang-Analyse
-                und automatisch generierter Kennzahlen. Diese Demo zeigt einen möglichen Ablauf von der Datenerhebung
-                bis zum Ergebnisbericht.
+                Identifizieren Sie Energieeffizienzpotenziale anhand produktionsnaher Daten, Lastgang-Analyse,
+                Zyklenerkennung und automatisch generierter Kennzahlen. Diese Demo zeigt einen möglichen Ablauf
+                von der Datenerhebung bis zum Ergebnisbericht.
             </p>
             <div class="badge-row">
                 <span class="badge">Produktionsdaten</span>
-                <span class="badge">Energiekennzahlen</span>
-                <span class="badge">Lastgang-Analyse</span>
+                <span class="badge">Grundlastanalyse</span>
+                <span class="badge">Lastspitzen</span>
+                <span class="badge">Zyklenerkennung</span>
                 <span class="badge">PDF-Bericht</span>
             </div>
         </div>
@@ -444,6 +613,24 @@ def nav_buttons(show_next=True, next_label="Weiter"):
             st.button(next_label, on_click=next_step)
 
 
+def render_recommendation_card(rec):
+    css_class = {
+        "hoch": "recommendation-high",
+        "mittel": "recommendation-medium",
+        "niedrig": "recommendation-low",
+    }.get(rec["priority"], "recommendation-low")
+    st.markdown(
+        f"""
+        <div class="insight {css_class}">
+            <b>{rec['priority'].upper()} · {rec['title']}</b><br>
+            <span class="small-muted">{rec['reason']}</span><br>
+            {rec['impact']}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ------------------------------------------------------------
 # UI
 # ------------------------------------------------------------
@@ -454,6 +641,8 @@ with st.sidebar:
     st.header("Demo-Modus")
     st.write("Diese App ist ein Dummy-Prototyp für eine mögliche Energieeffizienzplattform.")
     st.info("Ohne Upload wird ein synthetischer Lastgang erzeugt, damit die Analyse direkt getestet werden kann.")
+    st.subheader("Nächste Produktidee")
+    st.caption("Später könnten Nutzer Projekte speichern, Teams einladen und mehrere Standorte vergleichen.")
     if st.button("Demo zurücksetzen"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
@@ -582,7 +771,6 @@ elif st.session_state.step == 5:
     st.write("Laden Sie eine CSV- oder Excel-Datei mit Zeitstempel und Leistung hoch. Für die Demo können Sie den Upload überspringen.")
 
     uploaded = st.file_uploader("Lastgang-Datei hochladen", type=["csv", "xlsx"])
-
     st.caption("Erwartete Spalten zum Beispiel: `timestamp`, `power_kw`. Andere Spaltennamen werden heuristisch erkannt.")
 
     if st.button("Analyse starten"):
@@ -597,16 +785,30 @@ elif st.session_state.step == 5:
 
     if st.session_state.analysis is not None:
         analysis = st.session_state.analysis
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Energie", f"{analysis['total_energy']:,.0f} kWh")
         m2.metric("Peak", f"{analysis['peak_power']:,.1f} kW")
         m3.metric("Grundlast", f"{analysis['base_load']:,.1f} kW")
-        m4.metric("Zyklen", f"{analysis['detected_cycles']}")
+        m4.metric("Nicht-Produktion", f"{analysis['non_production_share'] * 100:.1f} %")
+        m5.metric("Zyklen", f"{analysis['detected_cycles']}")
 
-        chart_df = analysis["df"].set_index("timestamp")[["power_kw"]]
-        st.line_chart(chart_df)
+        tab1, tab2, tab3, tab4 = st.tabs(["Lastgang", "Tagesenergie", "Heatmap", "Lastspitzen"])
+        with tab1:
+            chart_df = analysis["df"].set_index("timestamp")[["power_kw"]]
+            st.line_chart(chart_df)
+            st.caption("Die Zyklenerkennung basiert in dieser Demo auf einem gleitenden Mittelwert und einem Quantil-Schwellenwert.")
+        with tab2:
+            daily = analysis["daily_energy"].copy()
+            daily["date"] = pd.to_datetime(daily["date"])
+            st.bar_chart(daily.set_index("date")[["energy_kwh"]])
+        with tab3:
+            st.dataframe(analysis["heatmap_data"].style.format("{:.0f}"), width='stretch')
+            st.caption("Durchschnittliche Leistung je Wochentag und Stunde. Hohe Werte außerhalb geplanter Produktion deuten auf Grundlastpotenziale hin.")
+        with tab4:
+            st.dataframe(analysis["top_peaks"], width='stretch')
+            st.caption("Diese Zeitpunkte sind Kandidaten für Lastspitzenmanagement oder detaillierte Ursachenanalyse.")
 
-        st.info("Die Demo erkennt Produktionszyklen über gleitende Mittelwerte und Schwellenwerte. Für echte Projekte sollte diese Logik fachlich angepasst werden.")
+        st.info("Neu in dieser Version: Heatmap, Peak-Liste, Nicht-Produktionsanteil, annualisierte Energie, CO2-Potenzial und priorisierte Empfehlungen.")
 
     st.markdown('</div>', unsafe_allow_html=True)
     nav_buttons(show_next=st.session_state.analysis is not None, next_label="Zum Bericht")
@@ -622,14 +824,46 @@ elif st.session_state.step == 6:
     else:
         analysis = st.session_state.analysis
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Einsparpotenzial", f"{analysis['estimated_savings_kwh']:,.0f} kWh")
         c2.metric("Potenzial monetär", f"{analysis['estimated_savings_eur']:,.0f} EUR")
-        c3.metric("Nicht-Produktionsanteil", f"{analysis['non_prod_share'] * 100:.1f} %")
+        c3.metric("CO2-Potenzial", f"{analysis['estimated_co2_savings_t']:.1f} t")
+        c4.metric("Peak-Potenzial/Jahr", f"{analysis['peak_savings_eur_year']:,.0f} EUR")
 
-        st.subheader("Priorisierte Hinweise")
+        st.subheader("Priorisierte Handlungsempfehlungen")
         for rec in analysis["recommendations"]:
-            st.markdown(f"- {rec}")
+            render_recommendation_card(rec)
+
+        with st.expander("Technische Kennzahlen anzeigen"):
+            kpi_table = pd.DataFrame(
+                {
+                    "Kennzahl": [
+                        "Analysierte Tage",
+                        "Gesamtenergie [kWh]",
+                        "Annualisierte Energie [kWh/Jahr]",
+                        "Maximale Leistung [kW]",
+                        "Durchschnittsleistung [kW]",
+                        "Grundlast [kW]",
+                        "Lastfaktor",
+                        "Nicht-Produktionsanteil [%]",
+                        "Zyklusenergieanteil [%]",
+                        "Energie je Einheit [kWh/Stück]",
+                    ],
+                    "Wert": [
+                        analysis["analyzed_days"],
+                        round(analysis["total_energy"], 0),
+                        round(analysis["annualized_energy"], 0),
+                        round(analysis["peak_power"], 1),
+                        round(analysis["avg_power"], 1),
+                        round(analysis["base_load"], 1),
+                        round(analysis["load_factor"], 2),
+                        round(analysis["non_production_share"] * 100, 1),
+                        round(analysis["cycle_energy_share"] * 100, 1),
+                        round(analysis["energy_per_unit"], 3),
+                    ],
+                }
+            )
+            st.dataframe(kpi_table, width='stretch')
 
         st.divider()
         st.write("Bitte geben Sie eine E-Mail-Adresse ein, um den PDF-Bericht freizuschalten.")
@@ -648,7 +882,7 @@ elif st.session_state.step == 6:
             st.download_button(
                 "PDF-Bericht herunterladen",
                 data=pdf_bytes,
-                file_name="energieeffizienz_analyse_demo.pdf",
+                file_name="energieeffizienz_analyse_demo_v2.pdf",
                 mime="application/pdf",
             )
             st.caption("In einer produktiven Version könnte hier zusätzlich ein CRM-, Newsletter- oder E-Mail-Versandprozess angebunden werden.")
