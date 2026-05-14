@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 
+LOCAL_EXTRACTION_VERSION = "text-layout-v3"
 POWER_PATTERN = re.compile(r"(?P<value>\d+(?:[,.]\d+)?)\s*(?P<unit>kw|w|kva|va)(?=$|\s|[;|,)])", re.IGNORECASE)
 CURRENT_PATTERN = re.compile(r"(?P<value>\d+(?:[,.]\d+)?)\s*(?P<unit>a)\b", re.IGNORECASE)
 VOLTAGE_PATTERN = re.compile(r"(?P<value>\d+(?:[,.]\d+)?)\s*(?P<unit>v)\b", re.IGNORECASE)
@@ -21,9 +22,20 @@ PREFERRED_IDENTIFIER_PATTERNS = [
     re.compile(r"(?<![A-Z0-9])(?P<tag>-\d{0,3}E\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
     re.compile(r"(?<![A-Z0-9])(?P<tag>-\d{0,3}K\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
     re.compile(r"(?<![A-Z0-9])(?P<tag>-\d{0,3}Q\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Z0-9/])(?P<tag>\d{1,3}M\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Z0-9/])(?P<tag>\d{1,3}E\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Z0-9/])(?P<tag>\d{1,3}K\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
     re.compile(r"(?<![A-Z0-9])(?P<tag>[A-Z]\d{1,2}-\d{2}[MEK]\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
 ]
-LOCAL_IDENTIFIER_PATTERNS = [*PREFERRED_IDENTIFIER_PATTERNS[:3], PREFERRED_IDENTIFIER_PATTERNS[4]]
+LOCAL_IDENTIFIER_PATTERNS = [
+    PREFERRED_IDENTIFIER_PATTERNS[0],
+    PREFERRED_IDENTIFIER_PATTERNS[1],
+    PREFERRED_IDENTIFIER_PATTERNS[2],
+    PREFERRED_IDENTIFIER_PATTERNS[4],
+    PREFERRED_IDENTIFIER_PATTERNS[5],
+    PREFERRED_IDENTIFIER_PATTERNS[6],
+    PREFERRED_IDENTIFIER_PATTERNS[7],
+]
 
 CONSUMER_KEYWORDS = {
     "Motor": [
@@ -183,6 +195,22 @@ LINE_NOISE_MARKERS = [
     "t=45s",
 ]
 
+FOOTER_LINE_MARKERS = [
+    "änderung",
+    "bearb.",
+    "gepr.",
+    "datum",
+    "ersatz",
+    "ursprung",
+    "norm en",
+    "kommission",
+    "projektnummer",
+    "bvl oberflächentechnik",
+    "pfronten gmbh",
+    "deckel maho",
+    "revision",
+]
+
 PORTFOLIO_RECOMMENDATIONS = {
     "I": "Kontinuierliche Messung priorisieren: hoher Nutzungsgrad und lange Nutzungszeit.",
     "II": "Zeitlich fokussiert messen: hoher Nutzungsgrad, aber begrenzte Laufzeit.",
@@ -294,6 +322,152 @@ def _column_window(lines: list[str], line_index: int, match: re.Match, before: i
     return [line[left:right] for line in _line_window(lines, line_index, before=before, after=after)]
 
 
+def _is_cable_reference_match(line: str, match: re.Match) -> bool:
+    start, end = match.span("tag")
+    nearby = line[max(0, start - 8) : min(len(line), end + 8)].upper()
+    return "/" in line[max(0, start - 3) : start] or "W-X" in nearby
+
+
+def _component_anchor_matches(lines: list[str]) -> list[tuple[int, re.Match]]:
+    anchors: list[tuple[int, re.Match]] = []
+    for line_index, line in enumerate(lines):
+        for match in _iter_local_identifier_matches(line):
+            family = _identifier_family(match.group("tag"))
+            if family not in {"M", "E"}:
+                continue
+            if _is_cable_reference_match(line, match):
+                continue
+            anchors.append((line_index, match))
+    return anchors
+
+
+def _column_bounds_for_anchor(anchor_index: int, anchors: list[tuple[int, re.Match]], max_width: int) -> tuple[int, int]:
+    centers = sorted((match.span("tag")[0] + match.span("tag")[1]) // 2 for _, match in anchors)
+    _, match = anchors[anchor_index]
+    center = (match.span("tag")[0] + match.span("tag")[1]) // 2
+    previous_centers = [candidate for candidate in centers if candidate < center]
+    next_centers = [candidate for candidate in centers if candidate > center]
+
+    left = max(0, int((previous_centers[-1] + center) / 2) if previous_centers else center - 42)
+    right = min(max_width, int((center + next_centers[0]) / 2) if next_centers else center + 56)
+    return left, min(max_width, right + 8)
+
+
+def _clean_column_label(text: str) -> str:
+    designation = clean_designation(text)
+    if designation == "Unbenannter Verbraucher":
+        return ""
+    if ";" in designation:
+        return ""
+    normalized = _normalize_search_text(designation)
+    if any(marker in normalized for marker in LINE_NOISE_MARKERS):
+        return ""
+    if normalized in {"m", "reserve", "no com", "sockel"}:
+        return ""
+    if re.search(r"\b(?:u1|v1|w1|pe|g?nye|bn|bk|gy|l1|l2|l3|mm2|mm²)\b", normalized):
+        return ""
+    if POWER_PATTERN.search(text) or CURRENT_PATTERN.search(text) or VOLTAGE_PATTERN.search(text):
+        return ""
+    if any(pattern.search(text) for pattern in PREFERRED_IDENTIFIER_PATTERNS):
+        return ""
+    if len(re.sub(r"[^A-Za-zÄÖÜäöüß]", "", designation)) < 4:
+        return ""
+    return designation
+
+
+def _best_column_designation(column_lines: list[str], identifier_line_offset: int) -> str:
+    labels: list[tuple[int, str]] = []
+    for offset, line in enumerate(column_lines[identifier_line_offset + 1 :], start=identifier_line_offset + 1):
+        label = _clean_column_label(line)
+        if not label:
+            continue
+        labels.append((offset, label))
+
+    if not labels:
+        return ""
+
+    typed_labels = [(offset, label) for offset, label in labels if detect_consumer_type(label) != "Unklar"]
+    selected_offset, selected_label = typed_labels[0] if typed_labels else labels[0]
+    combined = [selected_label]
+    for offset, label in labels:
+        if offset <= selected_offset:
+            continue
+        if offset - selected_offset > 3:
+            break
+        if label not in combined and len(" ".join(combined + [label])) <= 95:
+            combined.append(label)
+
+    return " ".join(combined)
+
+
+def _extract_column_aligned_consumers(lines: list[str], page_index: int) -> list[dict[str, Any]]:
+    anchors = _component_anchor_matches(lines)
+    if not anchors:
+        return []
+
+    max_width = max(len(line) for line in lines)
+    consumers: list[dict[str, Any]] = []
+    for anchor_index, (line_index, match) in enumerate(anchors):
+        identifier = _normalize_identifier_tag(match.group("tag").strip())
+        family = _identifier_family(identifier)
+        left, right = _column_bounds_for_anchor(anchor_index, anchors, max_width)
+        window_start = max(0, line_index - 5)
+        footer_start = len(lines)
+        for candidate_index in range(line_index + 1, len(lines)):
+            normalized_line = _normalize_search_text(lines[candidate_index])
+            if any(_normalize_search_text(marker) in normalized_line for marker in FOOTER_LINE_MARKERS):
+                footer_start = candidate_index
+                break
+        window_end = min(footer_start, line_index + 12)
+        column_lines = [line[left:right] for line in lines[window_start:window_end]]
+        identifier_line_offset = line_index - window_start
+        context = " | ".join(part.strip() for part in column_lines if part.strip())
+
+        designation = _best_column_designation(column_lines, identifier_line_offset)
+        if not designation:
+            continue
+
+        consumer_type = detect_consumer_type(designation)
+        if consumer_type == "Unklar":
+            consumer_type = detect_consumer_type(context)
+        if family == "E" and consumer_type == "Unklar":
+            consumer_type = "Heizung"
+        if consumer_type == "Unklar":
+            continue
+
+        power_kw = extract_power_kw(context)
+        current_a = _first_number(CURRENT_PATTERN, context)
+        voltage_v = _first_number(VOLTAGE_PATTERN, context)
+        confidence = 0.62
+        if power_kw is not None:
+            confidence += 0.16
+        if current_a is not None or voltage_v is not None:
+            confidence += 0.05
+        if detect_consumer_type(designation) != "Unklar":
+            confidence += 0.14
+        if family in {"M", "E"}:
+            confidence += 0.04
+
+        consumers.append(
+            {
+                "detection_id": len(consumers) + 1,
+                "page": page_index,
+                "identifier": identifier,
+                "designation": designation,
+                "consumer_type": consumer_type,
+                "nominal_power_kw": power_kw,
+                "nominal_current_a": current_a,
+                "voltage_v": voltage_v,
+                "cabinet": "",
+                "source": "Lokale Textanalyse",
+                "confidence": min(confidence, 0.98),
+                "source_snippet": context[:500],
+            }
+        )
+
+    return consumers
+
+
 def _extract_text_with_pypdf(pdf_bytes: bytes) -> str:
     try:
         from pypdf import PdfReader
@@ -365,9 +539,15 @@ def extract_identifier(text: str) -> str:
     for pattern in PREFERRED_IDENTIFIER_PATTERNS:
         match = pattern.search(text)
         if match:
-            return match.group("tag").strip()
+            return _normalize_identifier_tag(match.group("tag").strip())
     match = IDENTIFIER_PATTERN.search(text)
-    return match.group("tag").strip() if match else ""
+    return _normalize_identifier_tag(match.group("tag").strip()) if match else ""
+
+
+def _normalize_identifier_tag(tag: str) -> str:
+    if re.match(r"^\d{1,3}[MEK]\d{1,4}(?:[./_-]\d{1,4})?$", tag, re.IGNORECASE):
+        return f"-{tag}"
+    return tag
 
 
 def extract_power_kw(text: str) -> float | None:
@@ -402,6 +582,8 @@ def clean_designation(text: str) -> str:
     collapsed = re.sub(r"\b\d+\s*~\b", " ", collapsed)
     collapsed = re.sub(r"[_|]+", " ", collapsed)
     collapsed = re.sub(r"\s{2,}", " ", collapsed).strip(" -;|:,")
+    collapsed = re.sub(r"^[a-zäöüß]+\s+(?=[A-ZÄÖÜ])", " ", collapsed).strip()
+    collapsed = re.sub(r"\s+Re$", "", collapsed).strip()
     return collapsed[:110] if collapsed else "Unbenannter Verbraucher"
 
 
@@ -585,10 +767,20 @@ def extract_consumers_locally(pdf_text: str) -> list[dict[str, Any]]:
 
         lines = [line.rstrip() for line in page_text.splitlines() if line.strip()]
         page_title = _extract_page_title(lines)
+        aligned_consumers = _extract_column_aligned_consumers(lines, page_index)
+        consumers.extend(aligned_consumers)
+        aligned_identifiers = {
+            str(item.get("identifier") or "").upper()
+            for item in aligned_consumers
+        }
 
         for line_index, line in enumerate(lines):
             for match in _iter_local_identifier_matches(line):
-                identifier = match.group("tag").strip()
+                identifier = _normalize_identifier_tag(match.group("tag").strip())
+                if identifier.upper() in aligned_identifiers:
+                    continue
+                if _is_cable_reference_match(line, match):
+                    continue
                 column_lines = _column_window(lines, line_index, match)
                 full_lines = _line_window(lines, line_index, before=3, after=10)
                 context = " | ".join(part.strip() for part in column_lines if part.strip())
@@ -869,6 +1061,7 @@ def analyze_circuit_pdf(
                     "text_characters": 0,
                     "text_engine": "vision",
                     "recognition_engine": "KI-Vision",
+                    "extraction_version": LOCAL_EXTRACTION_VERSION,
                     "messages": [
                         "Aus dem PDF konnte kein Text extrahiert werden. Die KI-Vision hat gerenderte Seitenbilder analysiert."
                     ],
@@ -882,6 +1075,7 @@ def analyze_circuit_pdf(
             "text_characters": 0,
             "text_engine": extraction_engine,
             "recognition_engine": "Keine Erkennung",
+            "extraction_version": LOCAL_EXTRACTION_VERSION,
             "messages": messages
             + ["Aus dem PDF konnte kein Text extrahiert werden. Für gescannte Schaltpläne ist ein KI-Vision-Backend nötig."],
             "consumers": [],
@@ -907,6 +1101,7 @@ def analyze_circuit_pdf(
         "text_characters": len(pdf_text),
         "text_engine": extraction_engine,
         "recognition_engine": recognition_engine,
+        "extraction_version": LOCAL_EXTRACTION_VERSION,
         "messages": messages,
         "consumers": consumers,
     }
@@ -1017,6 +1212,7 @@ def demo_circuit_result() -> dict[str, Any]:
         "text_characters": 0,
         "text_engine": "Demo",
         "recognition_engine": "Demo",
+        "extraction_version": LOCAL_EXTRACTION_VERSION,
         "messages": [],
         "consumers": consumers,
     }

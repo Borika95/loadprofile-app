@@ -2,12 +2,13 @@ import os
 import re
 from html import escape
 
-import matplotlib.pyplot as plt
+import altair as alt
 import pandas as pd
 import streamlit as st
 
 from analysis import analyze_load_profile, read_load_profile
 from circuit_tool import (
+    LOCAL_EXTRACTION_VERSION,
     analyze_circuit_pdf,
     build_abc_analysis,
     classify_portfolio,
@@ -1226,56 +1227,90 @@ def render_abc_chart(abc_df: pd.DataFrame, a_limit: float, b_limit: float):
         st.info("Für die ABC-Analyse fehlen Verbraucher mit Nennleistung.")
         return
 
-    labels = [row.identifier or row.designation[:18] for row in abc_df.itertuples()]
-    group_colors = {"A": "#0f766e", "B": "#2563eb", "C": "#64748b"}
-    bar_colors = [group_colors.get(group, "#64748b") for group in abc_df["abc_group"]]
+    df = abc_df.copy().reset_index(drop=True)
+    df["order_idx"] = df.index
+    df["nominal_power_kw"] = pd.to_numeric(df["nominal_power_kw"], errors="coerce").fillna(0)
+    df["label"] = [
+        row.identifier or str(row.designation)[:22]
+        for row in df.itertuples()
+    ]
+    df["tooltip_power"] = df["nominal_power_kw"].map(lambda value: f"{value:.2f} kW")
+    df["tooltip_share"] = df["share_power_pct"].map(lambda value: f"{value:.1f} %")
+    df["tooltip_cum"] = df["cum_power_pct"].map(lambda value: f"{value:.1f} %")
 
-    fig, ax_power = plt.subplots(figsize=(7.2, 3.55), dpi=180, facecolor="#ffffff")
-    ax_power.set_facecolor("#ffffff")
-    bars = ax_power.bar(labels, abc_df["nominal_power_kw"], color=bar_colors, alpha=0.9, width=0.62)
-    ax_power.set_ylabel("Nennleistung [kW]")
-    ax_power.tick_params(axis="x", rotation=28, labelsize=9)
-    ax_power.tick_params(axis="y", colors="#475569")
-    ax_power.set_title("ABC-Priorisierung nach kumulierter Nennleistung", loc="left", fontsize=10.5, fontweight="bold", color="#0f172a")
-
-    for bar, value in zip(bars, abc_df["nominal_power_kw"]):
-        ax_power.annotate(
-            f"{value:.2g} kW",
-            xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-            xytext=(0, 5),
-            textcoords="offset points",
-            ha="center",
-            va="bottom",
-            fontsize=7.5,
-            color="#0f172a",
-        )
-
-    ax_share = ax_power.twinx()
-    ax_share.plot(labels, abc_df["cum_power_pct"], color="#0f172a", marker="o", linewidth=2.4, markersize=5)
-    ax_share.axhline(a_limit, color="#0f766e", linestyle="--", linewidth=1.2)
-    ax_share.axhline(b_limit, color="#2563eb", linestyle="--", linewidth=1.2)
-    ax_share.set_ylim(0, 105)
-    ax_share.set_ylabel("Kumulierte Leistung [%]")
-    ax_share.tick_params(axis="y", colors="#475569")
-
-    ax_power.grid(axis="y", color="#e2e8f0", linewidth=0.8)
-    for axis in [ax_power, ax_share]:
-        axis.spines["top"].set_visible(False)
-        axis.spines["left"].set_color("#cbd5e1")
-        axis.spines["bottom"].set_color("#cbd5e1")
-        axis.spines["right"].set_color("#cbd5e1")
-    ax_power.legend(
-        handles=[
-            plt.Rectangle((0, 0), 1, 1, color=group_colors["A"], label="A: Hauptverbraucher"),
-            plt.Rectangle((0, 0), 1, 1, color=group_colors["B"], label="B: relevante Verbraucher"),
-            plt.Rectangle((0, 0), 1, 1, color=group_colors["C"], label="C: nachrangig"),
-        ],
-        loc="upper right",
-        frameon=False,
-        fontsize=7.8,
+    hover = alt.selection_point(fields=["label"], on="pointerover", nearest=True, empty=False)
+    group_scale = alt.Scale(domain=["A", "B", "C"], range=["#0f766e", "#2563eb", "#64748b"])
+    x_axis = alt.X(
+        "label:N",
+        sort=alt.SortField("order_idx", order="ascending"),
+        title=None,
+        axis=alt.Axis(labelAngle=-28, labelLimit=110),
     )
-    fig.tight_layout()
-    st.pyplot(fig, clear_figure=True, width=760)
+    tooltip = [
+        alt.Tooltip("detection_id:Q", title="ID"),
+        alt.Tooltip("page:Q", title="Seite"),
+        alt.Tooltip("identifier:N", title="Kennzeichen"),
+        alt.Tooltip("designation:N", title="Bezeichnung"),
+        alt.Tooltip("consumer_type:N", title="Typ"),
+        alt.Tooltip("tooltip_power:N", title="Nennleistung"),
+        alt.Tooltip("tooltip_share:N", title="Leistungsanteil"),
+        alt.Tooltip("tooltip_cum:N", title="Kumuliert"),
+        alt.Tooltip("abc_group:N", title="ABC"),
+    ]
+
+    bars = (
+        alt.Chart(df)
+        .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+        .encode(
+            x=x_axis,
+            y=alt.Y("nominal_power_kw:Q", title="Nennleistung [kW]", axis=alt.Axis(titleColor="#334155")),
+            color=alt.Color("abc_group:N", title="ABC", scale=group_scale),
+            opacity=alt.condition(hover, alt.value(1), alt.value(0.72)),
+            tooltip=tooltip,
+        )
+    )
+
+    cumulative_line = (
+        alt.Chart(df)
+        .mark_line(point=alt.OverlayMarkDef(size=78, filled=True), color="#0f172a", strokeWidth=2.5)
+        .encode(
+            x=x_axis,
+            y=alt.Y(
+                "cum_power_pct:Q",
+                title="Kumulierte Leistung [%]",
+                scale=alt.Scale(domain=[0, 105]),
+                axis=alt.Axis(orient="right", titleColor="#0f172a"),
+            ),
+            tooltip=tooltip,
+        )
+    )
+
+    threshold_df = pd.DataFrame(
+        [
+            {"threshold": a_limit, "name": "A-Grenze"},
+            {"threshold": b_limit, "name": "B-Grenze"},
+        ]
+    )
+    thresholds = (
+        alt.Chart(threshold_df)
+        .mark_rule(strokeDash=[6, 5], strokeWidth=1.2)
+        .encode(
+            y=alt.Y("threshold:Q", scale=alt.Scale(domain=[0, 105])),
+            color=alt.Color("name:N", title=None, scale=alt.Scale(domain=["A-Grenze", "B-Grenze"], range=["#0f766e", "#2563eb"])),
+            tooltip=[alt.Tooltip("name:N", title="Grenze"), alt.Tooltip("threshold:Q", title="Wert [%]", format=".0f")],
+        )
+    )
+
+    chart = (
+        alt.layer(bars, cumulative_line + thresholds)
+        .add_params(hover)
+        .resolve_scale(y="independent")
+        .properties(height=390)
+        .configure_axis(gridColor="#e2e8f0", labelColor="#475569", titleColor="#334155")
+        .configure_view(strokeWidth=0)
+        .interactive(bind_y=False)
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def render_portfolio_plot(portfolio_df: pd.DataFrame, utilization_threshold: float, time_threshold: float):
@@ -1285,51 +1320,97 @@ def render_portfolio_plot(portfolio_df: pd.DataFrame, utilization_threshold: flo
 
     df = portfolio_df.copy()
     df["nominal_power_kw"] = pd.to_numeric(df["nominal_power_kw"], errors="coerce").fillna(0)
-    max_power = max(df["nominal_power_kw"].max(), 0.1)
-    colors = {"I": "#0f766e", "II": "#2563eb", "III": "#0891b2", "IV": "#64748b"}
+    df["utilization_pct"] = pd.to_numeric(df["utilization_pct"], errors="coerce").fillna(50).clip(0, 100)
+    df["operating_time_pct"] = pd.to_numeric(df["operating_time_pct"], errors="coerce").fillna(50).clip(0, 100)
+    df["label"] = [row.identifier or str(row.designation)[:16] for row in df.itertuples()]
+    df["tooltip_power"] = df["nominal_power_kw"].map(lambda value: f"{value:.2f} kW" if value > 0 else "unbekannt")
+    df["tooltip_utilization"] = df["utilization_pct"].map(lambda value: f"{value:.0f} %")
+    df["tooltip_time"] = df["operating_time_pct"].map(lambda value: f"{value:.0f} %")
+    df["bubble_power_kw"] = df["nominal_power_kw"].clip(lower=0.1)
 
-    fig, ax = plt.subplots(figsize=(7.2, 4.15), dpi=180, facecolor="#ffffff")
-    ax.set_facecolor("#ffffff")
-    ax.axvspan(time_threshold, 100, ymin=utilization_threshold / 100, ymax=1, color="#0f766e", alpha=0.08)
-    ax.axvspan(0, time_threshold, ymin=utilization_threshold / 100, ymax=1, color="#2563eb", alpha=0.07)
-    ax.axvspan(time_threshold, 100, ymin=0, ymax=utilization_threshold / 100, color="#0891b2", alpha=0.07)
-    ax.axvspan(0, time_threshold, ymin=0, ymax=utilization_threshold / 100, color="#64748b", alpha=0.07)
-    ax.axvline(time_threshold, color="#94a3b8", linestyle="--", linewidth=1.2)
-    ax.axhline(utilization_threshold, color="#94a3b8", linestyle="--", linewidth=1.2)
+    quadrant_df = pd.DataFrame(
+        [
+            {"portfolio_class": "I", "x": time_threshold, "x2": 100, "y": utilization_threshold, "y2": 100, "label_x": (time_threshold + 100) / 2, "label_y": 88, "name": "Klasse I"},
+            {"portfolio_class": "II", "x": 0, "x2": time_threshold, "y": utilization_threshold, "y2": 100, "label_x": time_threshold / 2, "label_y": 88, "name": "Klasse II"},
+            {"portfolio_class": "III", "x": time_threshold, "x2": 100, "y": 0, "y2": utilization_threshold, "label_x": (time_threshold + 100) / 2, "label_y": 12, "name": "Klasse III"},
+            {"portfolio_class": "IV", "x": 0, "x2": time_threshold, "y": 0, "y2": utilization_threshold, "label_x": time_threshold / 2, "label_y": 12, "name": "Klasse IV"},
+        ]
+    )
+    class_scale = alt.Scale(domain=["I", "II", "III", "IV"], range=["#0f766e", "#2563eb", "#0891b2", "#64748b"])
+    hover = alt.selection_point(fields=["detection_id"], on="pointerover", nearest=True, empty=False)
 
-    ax.text(74, 86, "Klasse I\nkontinuierlich", color="#0f766e", fontsize=8.6, fontweight="bold", ha="center")
-    ax.text(25, 86, "Klasse II\ngezielt", color="#2563eb", fontsize=8.6, fontweight="bold", ha="center")
-    ax.text(74, 13, "Klasse III\nprüfen", color="#0891b2", fontsize=8.6, fontweight="bold", ha="center")
-    ax.text(25, 13, "Klasse IV\nnachrangig", color="#64748b", fontsize=8.6, fontweight="bold", ha="center")
-
-    for portfolio_class, class_df in df.groupby("portfolio_class"):
-        sizes = 110 + (class_df["nominal_power_kw"] / max_power * 620)
-        ax.scatter(
-            class_df["operating_time_pct"],
-            class_df["utilization_pct"],
-            s=sizes,
-            color=colors.get(portfolio_class, "#64748b"),
-            alpha=0.78,
-            edgecolor="white",
-            linewidth=1.4,
-            label=f"Klasse {portfolio_class}",
+    quadrants = (
+        alt.Chart(quadrant_df)
+        .mark_rect(opacity=0.08)
+        .encode(
+            x=alt.X("x:Q", scale=alt.Scale(domain=[0, 100]), title="Geschätzte Nutzungszeit [%]"),
+            x2="x2:Q",
+            y=alt.Y("y:Q", scale=alt.Scale(domain=[0, 100]), title="Geschätzter Nutzungsgrad [%]"),
+            y2="y2:Q",
+            color=alt.Color("portfolio_class:N", scale=class_scale, legend=None),
         )
+    )
+    quadrant_labels = (
+        alt.Chart(quadrant_df)
+        .mark_text(fontWeight="bold", fontSize=13, opacity=0.72)
+        .encode(
+            x=alt.X("label_x:Q", scale=alt.Scale(domain=[0, 100])),
+            y=alt.Y("label_y:Q", scale=alt.Scale(domain=[0, 100])),
+            text="name:N",
+            color=alt.Color("portfolio_class:N", scale=class_scale, legend=None),
+        )
+    )
+    thresholds = (
+        alt.Chart(pd.DataFrame([{"x": time_threshold, "y": utilization_threshold}]))
+        .mark_rule(color="#94a3b8", strokeDash=[6, 5], strokeWidth=1.2)
+        .encode(x="x:Q")
+        + alt.Chart(pd.DataFrame([{"x": time_threshold, "y": utilization_threshold}]))
+        .mark_rule(color="#94a3b8", strokeDash=[6, 5], strokeWidth=1.2)
+        .encode(y="y:Q")
+    )
+    points = (
+        alt.Chart(df)
+        .mark_circle(stroke="#ffffff", strokeWidth=1.4)
+        .encode(
+            x=alt.X("operating_time_pct:Q", scale=alt.Scale(domain=[0, 100]), title="Geschätzte Nutzungszeit [%]"),
+            y=alt.Y("utilization_pct:Q", scale=alt.Scale(domain=[0, 100]), title="Geschätzter Nutzungsgrad [%]"),
+            size=alt.Size("bubble_power_kw:Q", title="Nennleistung [kW]", scale=alt.Scale(range=[90, 780])),
+            color=alt.Color("portfolio_class:N", title="Klasse", scale=class_scale),
+            opacity=alt.condition(hover, alt.value(1), alt.value(0.78)),
+            tooltip=[
+                alt.Tooltip("detection_id:Q", title="ID"),
+                alt.Tooltip("page:Q", title="Seite"),
+                alt.Tooltip("identifier:N", title="Kennzeichen"),
+                alt.Tooltip("designation:N", title="Bezeichnung"),
+                alt.Tooltip("consumer_type:N", title="Typ"),
+                alt.Tooltip("tooltip_power:N", title="Nennleistung"),
+                alt.Tooltip("tooltip_utilization:N", title="Nutzungsgrad"),
+                alt.Tooltip("tooltip_time:N", title="Nutzungszeit"),
+                alt.Tooltip("portfolio_class:N", title="Portfolio"),
+                alt.Tooltip("metering_recommendation:N", title="Empfehlung"),
+            ],
+        )
+    )
+    labels = (
+        alt.Chart(df)
+        .mark_text(dx=8, dy=-7, fontSize=11, color="#334155")
+        .encode(
+            x="operating_time_pct:Q",
+            y="utilization_pct:Q",
+            text="label:N",
+            opacity=alt.condition(hover, alt.value(1), alt.value(0.7)),
+        )
+    )
 
-    for row in df.itertuples():
-        label = row.identifier or str(row.designation)[:16]
-        ax.annotate(label, (row.operating_time_pct, row.utilization_pct), xytext=(5, 4), textcoords="offset points", fontsize=7.8)
-
-    ax.set_xlim(0, 100)
-    ax.set_ylim(0, 100)
-    ax.set_xlabel("Geschätzte Nutzungszeit [%]")
-    ax.set_ylabel("Geschätzter Nutzungsgrad [%]")
-    ax.set_title("Energieportfolio für Messstellenpriorisierung", loc="left", fontsize=10.5, fontweight="bold", color="#0f172a")
-    ax.grid(color="#e2e8f0", linewidth=0.8)
-    for spine in ax.spines.values():
-        spine.set_color("#cbd5e1")
-    ax.legend(loc="lower right", frameon=True, facecolor="#ffffff", edgecolor="#e2e8f0")
-    fig.tight_layout()
-    st.pyplot(fig, clear_figure=True, width=760)
+    chart = (
+        alt.layer(quadrants, quadrant_labels, thresholds, points, labels)
+        .add_params(hover)
+        .properties(height=440)
+        .configure_axis(gridColor="#e2e8f0", labelColor="#475569", titleColor="#334155")
+        .configure_view(strokeWidth=0)
+        .interactive()
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def render_circuit_tool_app():
@@ -1340,11 +1421,15 @@ def render_circuit_tool_app():
         st.subheader("Erkennung")
         recognition_mode = st.radio(
             "Modus",
-            ["KI-Assistenz (OpenAI)", "Lokale Textanalyse"],
+            ["Lokale Textanalyse (keine Tokens)", "KI-Assistenz (OpenAI)"],
             index=0,
-            help="Die KI-Assistenz sendet extrahierten PDF-Text an das konfigurierte LLM. Ohne API-Key wird lokal analysiert.",
+            help="Die lokale Textanalyse bleibt auf diesem Rechner. Nur die KI-Assistenz sendet extrahierten PDF-Text an OpenAI.",
         )
-        model = st.text_input("KI-Modell", value=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        model = None
+        if recognition_mode.startswith("KI"):
+            model = st.text_input("KI-Modell", value=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        else:
+            st.caption("Tokenfrei: Es wird kein OpenAI-API-Aufruf ausgeführt.")
         min_confidence = st.slider("Mindest-Konfidenz", 0.0, 1.0, 0.55, 0.05)
 
         st.subheader("Priorisierung")
@@ -1403,6 +1488,10 @@ def render_circuit_tool_app():
                 st.session_state.circuit_file_token = f"{uploaded_pdf.name}-{uploaded_pdf.size}"
 
     result = st.session_state.get("circuit_result")
+    if result and result.get("extraction_version") not in {LOCAL_EXTRACTION_VERSION, "Demo"}:
+        st.session_state.pop("circuit_result", None)
+        result = None
+        st.info("Die lokale Erkennung wurde aktualisiert. Bitte das PDF erneut analysieren.")
     if not result:
         st.info(
             "Noch kein Schaltplan analysiert. Lade die Demo oder analysiere ein PDF; danach erscheinen darunter die Ansichten "
@@ -1412,6 +1501,12 @@ def render_circuit_tool_app():
 
     for message in result.get("messages", []):
         st.warning(message)
+
+    st.caption(
+        f"Erkennung: {result.get('recognition_engine', 'unbekannt')} · "
+        f"Textextraktion: {result.get('text_engine', 'unbekannt')} · "
+        f"Version: {result.get('extraction_version', 'alt')}"
+    )
 
     raw_df = consumers_to_dataframe(result.get("consumers", []))
     if not raw_df.empty:
