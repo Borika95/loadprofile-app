@@ -21,22 +21,77 @@ PREFERRED_IDENTIFIER_PATTERNS = [
     re.compile(r"(?<![A-Z0-9])(?P<tag>-\d{0,3}E\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
     re.compile(r"(?<![A-Z0-9])(?P<tag>-\d{0,3}K\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
     re.compile(r"(?<![A-Z0-9])(?P<tag>-\d{0,3}Q\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Z0-9])(?P<tag>[A-Z]\d{1,2}-\d{2}[MEK]\d{1,4}(?:[./_-]\d{1,4})?)\b", re.IGNORECASE),
 ]
+LOCAL_IDENTIFIER_PATTERNS = [*PREFERRED_IDENTIFIER_PATTERNS[:3], PREFERRED_IDENTIFIER_PATTERNS[4]]
 
 CONSUMER_KEYWORDS = {
-    "Motor": ["motor", "antrieb", "drive", "servo", "spindel"],
-    "Pumpe": ["pumpe", "pump", "förderpumpe", "waschpumpe"],
-    "Ventilator": ["lüfter", "ventilator", "fan", "gebläse", "exhaust"],
+    "Motor": [
+        "motor",
+        "antrieb",
+        "drive",
+        "servo",
+        "spindel",
+        "stellklappe",
+        "rotationsantrieb",
+        "ölskimmer",
+        "oelskimmer",
+        "skimmer",
+    ],
+    "Pumpe": [
+        "pumpe",
+        "pump",
+        "förderpumpe",
+        "foerderpumpe",
+        "waschpumpe",
+        "ölpumpe",
+        "oelpumpe",
+        "hochdruckpumpe",
+        "ölhochdruckpumpe",
+        "oelhochdruckpumpe",
+        "hydraulikpumpe",
+        "kühlmittelpumpe",
+        "kuehlmittelpumpe",
+    ],
+    "Ventilator": [
+        "lüfter",
+        "luefter",
+        "ventilator",
+        "absaugventilator",
+        "kabinenlüfter",
+        "kabinenluefter",
+        "fan",
+        "gebläse",
+        "geblaese",
+        "exhaust",
+    ],
     "Heizung": ["heizung", "heiz", "heater", "heating", "trocknung", "drying"],
     "Kompressor": ["kompressor", "compressor", "verdichter"],
-    "Kälte": ["kälte", "cooling", "chiller", "kühler"],
+    "Kälte": [
+        "kälte",
+        "kaelte",
+        "kühl",
+        "kuehl",
+        "kühler",
+        "kuehler",
+        "kühlgerät",
+        "kuehlgeraet",
+        "kühlmittel",
+        "kuehlmittel",
+        "oelkühler",
+        "oelkuehler",
+        "cooling",
+        "chiller",
+    ],
     "Absaugung": ["absaugung", "extraction", "suction"],
     "Transformator": ["trafo", "transformator", "transformer"],
 }
+CONSUMER_TYPE_PRIORITY = ["Pumpe", "Ventilator", "Kälte", "Heizung", "Kompressor", "Absaugung", "Transformator", "Motor"]
 
 EXCLUSION_KEYWORDS = [
     "inhaltsverzeichnis",
     "vorsicherung",
+    "gesamtanschlusswert",
     "kabeltyp",
     "silikonleitung",
     "leitung",
@@ -54,7 +109,78 @@ EXCLUSION_KEYWORDS = [
     "schütz",
     "leuchtmelder",
     "leuchtdrucktaster",
+    "motorschutzschalter",
+    "leistungsschalter",
+    "sicherungsautomat",
     "zugfeder",
+]
+
+PAGE_EXCLUSION_MARKERS = [
+    "inhaltsverzeichnis",
+    "klemmenplan",
+    "kennzeichnung",
+    "anordnungsplan",
+    "geraeteanordnung",
+    "geräteanordnung",
+    "artikelstueckliste",
+    "artikelstückliste",
+    "artikelsummenstueckliste",
+    "artikelsummenstückliste",
+    "stueckliste",
+    "stückliste",
+    "legende",
+    "farbkennzeichnung",
+    "strukturkennzeichen",
+    "betriebsmittelkennzeichnung",
+    "seitenbezogene bereichs-einteilung",
+    "codierplan",
+    "strombelastbarkeit",
+    "leiterfarben",
+    "drehmomententabelle",
+    "vorschriften schaltschrank",
+    "vorschriften maschine",
+    "schaltschrankaufbau",
+    "montageplattenaufbau",
+]
+
+LINE_NOISE_MARKERS = [
+    "änderung",
+    "bearb.",
+    "gepr.",
+    "datum",
+    "ersatz",
+    "ursprung",
+    "norm en",
+    "blatt",
+    "alle leitungen",
+    "technische unterlagen",
+    "anschlussplan",
+    "ohne bediengeräteschrank",
+    "kommission",
+    "projekt",
+    "bvl oberflächentechnik",
+    "pfronten gmbh",
+    "revision",
+    "ausschaltverzögert",
+    "ausschaltverzoegert",
+    "prozessüberwachung",
+    "prozessueberwachung",
+    "werkzeugüberwachung",
+    "werkzeugueberwachung",
+    "not-halt",
+    "haltverzögert",
+    "haltverzoegert",
+    "überbrück",
+    "ueberbrueck",
+    "muting",
+    "störung",
+    "stoerung",
+    "freigabe",
+    "sammelstörung",
+    "sammelstoerung",
+    "akkumulator",
+    "accumulator",
+    "t=45s",
 ]
 
 PORTFOLIO_RECOMMENDATIONS = {
@@ -93,6 +219,79 @@ def _first_number(pattern: re.Pattern, text: str) -> float | None:
     if not match:
         return None
     return _to_float(match.group("value"))
+
+
+def _normalize_search_text(text: str) -> str:
+    return text.casefold().translate(str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"}))
+
+
+def _contains_keyword(text: str, keywords: list[str]) -> bool:
+    normalized = _normalize_search_text(text)
+    return any(_normalize_search_text(keyword) in normalized for keyword in keywords)
+
+
+def _contains_exclusion(text: str) -> bool:
+    normalized = _normalize_search_text(text)
+    return any(_normalize_search_text(keyword) in normalized for keyword in EXCLUSION_KEYWORDS)
+
+
+def _identifier_family(identifier: str) -> str:
+    match = re.search(r"([MEKQ])\d{1,4}(?:[./_-]\d{1,4})?$", identifier.upper())
+    return match.group(1) if match else ""
+
+
+def _page_should_be_skipped(page_text: str) -> bool:
+    normalized = _normalize_search_text(page_text)
+    if not normalized.strip():
+        return True
+
+    always_skip = [
+        "inhaltsverzeichnis",
+        "klemmenplan",
+        "anordnungsplan",
+        "geraeteanordnung",
+        "artikelstueckliste",
+        "artikelsummenstueckliste",
+        "stueckliste",
+        "seitenbezogene bereichs-einteilung",
+    ]
+    if any(marker in normalized for marker in always_skip):
+        return True
+
+    if len(re.findall(r"\b\d+\s*/\s*stromlaufplan\b", normalized)) >= 3:
+        return True
+    if "seite" in normalized and "seitenbeschreibung" in normalized:
+        return True
+    if "bmk" in normalized and "benennung" in normalized and "blatt" in normalized:
+        return True
+
+    if "stromlaufplan" in normalized:
+        return False
+
+    return any(_normalize_search_text(marker) in normalized for marker in PAGE_EXCLUSION_MARKERS)
+
+
+def _iter_local_identifier_matches(line: str):
+    seen_spans = set()
+    for pattern in LOCAL_IDENTIFIER_PATTERNS:
+        for match in pattern.finditer(line):
+            span = match.span("tag")
+            if span in seen_spans:
+                continue
+            seen_spans.add(span)
+            yield match
+
+
+def _line_window(lines: list[str], line_index: int, before: int = 4, after: int = 9) -> list[str]:
+    return lines[max(0, line_index - before) : min(len(lines), line_index + after + 1)]
+
+
+def _column_window(lines: list[str], line_index: int, match: re.Match, before: int = 6, after: int = 12) -> list[str]:
+    start, end = match.span("tag")
+    center = (start + end) // 2
+    left = max(0, center - 28)
+    right = center + 46
+    return [line[left:right] for line in _line_window(lines, line_index, before=before, after=after)]
 
 
 def _extract_text_with_pypdf(pdf_bytes: bytes) -> str:
@@ -140,26 +339,25 @@ def _extract_text_with_pdftotext(pdf_bytes: bytes) -> str:
 
 
 def extract_pdf_text(pdf_bytes: bytes) -> tuple[str, str]:
-    pypdf_text = _extract_text_with_pypdf(pdf_bytes)
-    if len(pypdf_text.strip()) > 80:
-        return pypdf_text, "pypdf"
-
     pdftotext_text = _extract_text_with_pdftotext(pdf_bytes)
     if len(pdftotext_text.strip()) > 80:
         return pdftotext_text, "pdftotext"
+
+    pypdf_text = _extract_text_with_pypdf(pdf_bytes)
+    if len(pypdf_text.strip()) > 80:
+        return pypdf_text, "pypdf"
 
     return "", "none"
 
 
 def detect_consumer_type(text: str) -> str:
-    text_lower = text.lower()
+    for consumer_type in CONSUMER_TYPE_PRIORITY:
+        if _contains_keyword(text, CONSUMER_KEYWORDS[consumer_type]):
+            return consumer_type
     if re.search(r"(?<![A-Z0-9])-\d{0,3}M\d{1,4}\b", text, re.IGNORECASE):
         return "Motor"
     if re.search(r"(?<![A-Z0-9])-\d{0,3}E\d{1,4}\b", text, re.IGNORECASE):
         return "Heizung"
-    for consumer_type, keywords in CONSUMER_KEYWORDS.items():
-        if any(keyword in text_lower for keyword in keywords):
-            return consumer_type
     return "Unklar"
 
 
@@ -181,79 +379,284 @@ def extract_power_kw(text: str) -> float | None:
 
 def clean_designation(text: str) -> str:
     collapsed = re.sub(r"\s+", " ", text).strip()
+    collapsed = re.sub(r"\bN/C\b", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"\+\w+", " ", collapsed)
+    collapsed = re.sub(r"\bBSTA\s*\d+[A-Z0-9./_-]*", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"\bDECKEL\s+MAHO\b", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"\bDMU\s*\d+\b", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"\bBvL\s+Oberflächentechnik\b", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"\b\d+\s*Bl\.", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"^\s*DE\s+", " ", collapsed)
+    collapsed = re.sub(r"^\s*M\s+", " ", collapsed)
+    collapsed = re.sub(r"^\s*/[A-Z]\s+", " ", collapsed)
+    collapsed = re.sub(r"^\s*eisung\s+", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"\b(?:DAM|SZR|KEP|MGE)\b", " ", collapsed)
+    collapsed = re.sub(r"\bq[xaieo]_[A-Za-z0-9_]+\b", " ", collapsed)
+    collapsed = re.sub(r"(?<![A-Z0-9])[A-Z]\d{1,2}-\d{2}[MEK]\d{1,4}(?:[./_-]\d{1,4})?\b", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"(?<![A-Z0-9])[-=+]?\d{0,3}[MEKQ]\d{1,4}(?:[./_-]\d{1,4})?\b", " ", collapsed, flags=re.IGNORECASE)
+    collapsed = re.sub(r"(?<![A-Z0-9])[-=+]?[A-Z]{1,4}\d{1,5}[A-Z]?(?:[./_-]\d{1,4})?\b", " ", collapsed)
+    collapsed = re.sub(r"/\d{1,3}(?:[.,]\d{1,2})?", " ", collapsed)
     collapsed = re.sub(r"\b\d+(?:[,.]\d+)?\s*(?:kw|w|kva|va|a|v)\b", "", collapsed, flags=re.IGNORECASE)
-    collapsed = re.sub(r"\s{2,}", " ", collapsed).strip(" -;|")
+    collapsed = re.sub(r"\b[PIM]\s*=", " ", collapsed)
+    collapsed = re.sub(r"\b(?:U1|V1|W1|PE|L1|L2|L3|N|BN|BK|GY|GNYE|WH|GN|YE|RD|BU|A1|A2)\b", " ", collapsed)
+    collapsed = re.sub(r"\b\d+\s*~\b", " ", collapsed)
+    collapsed = re.sub(r"[_|]+", " ", collapsed)
+    collapsed = re.sub(r"\s{2,}", " ", collapsed).strip(" -;|:,")
     return collapsed[:110] if collapsed else "Unbenannter Verbraucher"
+
+
+def _designation_score(text: str) -> float:
+    designation = clean_designation(text)
+    if designation == "Unbenannter Verbraucher":
+        return -10
+
+    normalized = _normalize_search_text(designation)
+    if any(marker in normalized for marker in LINE_NOISE_MARKERS):
+        return -8
+    if re.search(r"\b(?:\d+(?:x|g)\d+(?:[,.]\d+)?|qc\d*q?-?f|mm²|mm2)\b", normalized, re.IGNORECASE):
+        return -6
+    if _contains_exclusion(designation) and detect_consumer_type(designation) == "Unklar":
+        return -7
+    if normalized in {"m", "reserve", "no com", "sockel"}:
+        return -6
+    if len(re.sub(r"[^A-Za-zÄÖÜäöüß]", "", designation)) < 4:
+        return -5
+
+    score = 0.0
+    if detect_consumer_type(designation) != "Unklar":
+        score += 8
+    if POWER_PATTERN.search(text) or CURRENT_PATTERN.search(text) or VOLTAGE_PATTERN.search(text):
+        score -= 2
+    if any(pattern.search(text) for pattern in PREFERRED_IDENTIFIER_PATTERNS):
+        score -= 2
+    if re.search(r"\b(?:U1|V1|W1|PE|L1|L2|L3|BN|BK|GY|GNYE)\b", text):
+        score -= 2
+    word_count = len(re.findall(r"[A-Za-zÄÖÜäöüß]{3,}", designation))
+    if 1 <= word_count <= 5:
+        score += 1
+    elif word_count > 8:
+        score -= 1
+    if designation.isupper():
+        score += 0.5
+    return score
+
+
+def _best_designation(context_lines: list[str], fallback: str) -> str:
+    candidates = [(line, _designation_score(line)) for line in context_lines if line.strip()]
+    candidates = [candidate for candidate in candidates if candidate[1] > -5]
+    if not candidates:
+        return clean_designation(fallback)
+
+    best_line, best_score = max(candidates, key=lambda item: item[1])
+    best_index = context_lines.index(best_line)
+    if best_score <= _designation_score(fallback):
+        return clean_designation(fallback)
+
+    designation = clean_designation(best_line)
+    if _normalize_search_text(designation) in {"motor", "antrieb"}:
+        for neighbor in context_lines[best_index + 1 : best_index + 4]:
+            neighbor_designation = clean_designation(neighbor)
+            if neighbor_designation != "Unbenannter Verbraucher" and _designation_score(neighbor_designation) >= 0:
+                designation = f"{designation} {neighbor_designation}"[:110]
+                break
+    return designation
+
+
+def _extract_page_title(lines: list[str]) -> str:
+    candidates: list[str] = []
+    ignored_single_terms = {"temp", "daten", "takt", "sense", "links", "rechts"}
+    for line in lines[-35:]:
+        tail = line
+        if re.search(r"ursprung:?", line, re.IGNORECASE):
+            tail = re.split(r"ursprung:?", line, flags=re.IGNORECASE)[-1]
+            tail = re.sub(r"P\.[A-Z0-9.]+", " ", tail, flags=re.IGNORECASE)
+        cleaned = clean_designation(tail)
+        if cleaned == "Unbenannter Verbraucher":
+            continue
+        normalized = _normalize_search_text(cleaned)
+        if any(marker in normalized for marker in LINE_NOISE_MARKERS):
+            continue
+        if normalized in ignored_single_terms:
+            continue
+        if detect_consumer_type(cleaned) != "Unklar" or cleaned.isupper():
+            candidates.append(cleaned)
+
+    if not candidates:
+        return ""
+
+    return " ".join(candidates[-2:])[:110]
+
+
+def _consumer_quality(item: dict[str, Any]) -> float:
+    designation = str(item.get("designation") or "")
+    confidence = _to_float(item.get("confidence")) or 0
+    quality = confidence
+    if item.get("identifier"):
+        quality += 0.08
+    if item.get("nominal_power_kw") is not None:
+        quality += 0.18
+    if designation and designation != "Unbenannter Verbraucher":
+        quality += 0.16
+    if detect_consumer_type(designation) != "Unklar":
+        quality += 0.1
+    if _identifier_family(str(item.get("identifier") or "")) in {"M", "E"}:
+        quality += 0.06
+    return quality
+
+
+def _consumer_dedupe_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    identifier = str(item.get("identifier") or "").strip().upper().lstrip("-+=")
+    if identifier:
+        return ("identifier", identifier)
+
+    designation = _normalize_search_text(str(item.get("designation") or ""))
+    designation = re.sub(r"[^a-z0-9]+", " ", designation).strip()
+    power = _to_float(item.get("nominal_power_kw"))
+    return ("designation", designation, round(power or 0, 3))
+
+
+def deduplicate_consumers(consumers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept: dict[tuple[Any, ...], dict[str, Any]] = {}
+    order: list[tuple[Any, ...]] = []
+    for item in consumers:
+        key = _consumer_dedupe_key(item)
+        if key not in kept:
+            kept[key] = item
+            order.append(key)
+            continue
+        if _consumer_quality(item) > _consumer_quality(kept[key]):
+            kept[key] = item
+
+    deduplicated = [kept[key] for key in order]
+    strong_load_pages = {
+        (item.get("page"), item.get("consumer_type"))
+        for item in deduplicated
+        if _identifier_family(str(item.get("identifier") or "")) in {"M", "E"}
+    }
+    strong_designations = [
+        re.sub(r"[^a-z0-9]+", "", _normalize_search_text(str(item.get("designation") or "")))
+        for item in deduplicated
+        if _identifier_family(str(item.get("identifier") or "")) in {"M", "E"}
+    ]
+    strong_sections = {
+        match.group(1).upper()
+        for item in deduplicated
+        if _identifier_family(str(item.get("identifier") or "")) == "M"
+        for match in [re.match(r"([A-Z]\d{1,2}-\d{2})M\d", str(item.get("identifier") or ""), re.IGNORECASE)]
+        if match
+    }
+    deduplicated = [
+        item
+        for item in deduplicated
+        if not (
+            _identifier_family(str(item.get("identifier") or "")) == "K"
+            and item.get("nominal_power_kw") is None
+            and (
+                (
+                    (section_match := re.match(r"([A-Z]\d{1,2}-\d{2})K\d", str(item.get("identifier") or ""), re.IGNORECASE))
+                    and section_match.group(1).upper() in strong_sections
+                )
+                or
+                (item.get("page"), item.get("consumer_type")) in strong_load_pages
+                or any(
+                    designation
+                    and strong
+                    and (designation in strong or strong in designation)
+                    for designation in [
+                        re.sub(r"[^a-z0-9]+", "", _normalize_search_text(str(item.get("designation") or "")))
+                    ]
+                    for strong in strong_designations
+                )
+            )
+        )
+    ]
+    for index, item in enumerate(deduplicated, start=1):
+        item["detection_id"] = index
+    return deduplicated
 
 
 def extract_consumers_locally(pdf_text: str) -> list[dict[str, Any]]:
     pages = re.split(r"\f+", pdf_text)
-    consumers = []
-    seen_keys = set()
+    consumers: list[dict[str, Any]] = []
 
     for page_index, page_text in enumerate(pages, start=1):
-        lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+        if _page_should_be_skipped(page_text):
+            continue
+
+        lines = [line.rstrip() for line in page_text.splitlines() if line.strip()]
+        page_title = _extract_page_title(lines)
+
         for line_index, line in enumerate(lines):
-            line_type = detect_consumer_type(line)
-            has_power = bool(POWER_PATTERN.search(line))
-            if line_type == "Unklar" and not has_power:
-                continue
+            for match in _iter_local_identifier_matches(line):
+                identifier = match.group("tag").strip()
+                column_lines = _column_window(lines, line_index, match)
+                full_lines = _line_window(lines, line_index, before=3, after=10)
+                context = " | ".join(part.strip() for part in column_lines if part.strip())
+                snippet = " | ".join(part.strip() for part in full_lines if part.strip())
 
-            window_start = max(0, line_index - 2)
-            window_end = min(len(lines), line_index + 3)
-            snippet = " | ".join(lines[window_start:window_end])
+                consumer_type = detect_consumer_type(context)
+                power_kw = extract_power_kw(context)
+                current_a = _first_number(CURRENT_PATTERN, context)
+                voltage_v = _first_number(VOLTAGE_PATTERN, context)
+                designation = _best_designation(column_lines, line)
+                designation_type = detect_consumer_type(designation)
+                family = _identifier_family(identifier)
+                if re.match(r"[A-Z]\d{1,2}-\d{2}[MEK]\d", identifier, re.IGNORECASE) and _designation_score(designation) < 2:
+                    full_designation = _best_designation(full_lines, line)
+                    if _designation_score(full_designation) > _designation_score(designation):
+                        designation = full_designation
+                        designation_type = detect_consumer_type(designation)
+                if family in {"M", "E"} and page_title and _designation_score(designation) < 2:
+                    designation = page_title
+                    designation_type = detect_consumer_type(designation)
 
-            consumer_type = detect_consumer_type(snippet)
-            power_kw = extract_power_kw(snippet)
-            if consumer_type == "Unklar" and power_kw is None:
-                continue
-            if consumer_type == "Unklar" and any(keyword in snippet.lower() for keyword in EXCLUSION_KEYWORDS):
-                continue
+                if designation_type != "Unklar":
+                    consumer_type = designation_type
+                if family == "E" and designation_type not in {"Heizung", "Kälte"}:
+                    continue
+                if family == "K" and designation_type == "Unklar" and power_kw is None:
+                    continue
+                if family == "K" and power_kw is None and len(re.findall(r"[A-Za-zÄÖÜäöüß]{3,}", designation)) > 5:
+                    continue
+                if consumer_type == "Unklar" and power_kw is None:
+                    continue
+                if consumer_type == "Unklar":
+                    continue
+                if designation == "Unbenannter Verbraucher" and power_kw is None:
+                    continue
 
-            identifier = extract_identifier(snippet)
-            designation = clean_designation(line if consumer_type != "Unklar" else snippet)
-            current_a = _first_number(CURRENT_PATTERN, snippet)
-            voltage_v = _first_number(VOLTAGE_PATTERN, snippet)
+                confidence = 0.48
+                if consumer_type != "Unklar":
+                    confidence += 0.18
+                if designation != "Unbenannter Verbraucher":
+                    confidence += 0.14
+                if power_kw is not None:
+                    confidence += 0.16
+                if current_a is not None or voltage_v is not None:
+                    confidence += 0.04
+                if family in {"M", "E"}:
+                    confidence += 0.04
+                if family == "K" and power_kw is None:
+                    confidence = min(confidence, 0.72)
 
-            dedupe_key = (page_index, identifier.lower(), round(power_kw or 0, 3)) if identifier else (
-                page_index,
-                designation.lower(),
-                round(power_kw or 0, 3),
-            )
-            if dedupe_key in seen_keys:
-                continue
-            seen_keys.add(dedupe_key)
+                consumers.append(
+                    {
+                        "detection_id": len(consumers) + 1,
+                        "page": page_index,
+                        "identifier": identifier,
+                        "designation": designation,
+                        "consumer_type": consumer_type,
+                        "nominal_power_kw": power_kw,
+                        "nominal_current_a": current_a,
+                        "voltage_v": voltage_v,
+                        "cabinet": "",
+                        "source": "Lokale Textanalyse",
+                        "confidence": min(confidence, 0.95),
+                        "source_snippet": snippet[:500],
+                    }
+                )
 
-            confidence = 0.42
-            if consumer_type != "Unklar":
-                confidence += 0.22
-            if power_kw is not None:
-                confidence += 0.2
-            if identifier:
-                confidence += 0.08
-            if current_a is not None or voltage_v is not None:
-                confidence += 0.05
-            if power_kw is None:
-                confidence = min(confidence, 0.5)
-
-            consumers.append(
-                {
-                    "detection_id": len(consumers) + 1,
-                    "page": page_index,
-                    "identifier": identifier,
-                    "designation": designation,
-                    "consumer_type": consumer_type,
-                    "nominal_power_kw": power_kw,
-                    "nominal_current_a": current_a,
-                    "voltage_v": voltage_v,
-                    "cabinet": "",
-                    "source": "Lokale Textanalyse",
-                    "confidence": min(confidence, 0.95),
-                    "source_snippet": snippet[:500],
-                }
-            )
-
-    return consumers
+    return deduplicate_consumers(consumers)
 
 
 def _get_json_object(text: str) -> dict[str, Any]:
@@ -289,6 +692,10 @@ Hinweise:
 - consumer_type ist z. B. Motor, Pumpe, Ventilator, Heizung, Kompressor, Kälte, Absaugung, Transformator oder Unklar.
 - confidence liegt zwischen 0 und 1.
 - source_snippet ist ein kurzer Auszug, der die Extraktion begründet.
+- Ignoriere Inhaltsverzeichnisse, Betriebsmittellisten, Klemmenpläne, Stücklisten, Geräteanordnungen und Übersichtstabellen.
+- Nutze Verbraucher nur aus dem eigentlichen Stromlaufplan/Schaltplanschema.
+- Lies die Bezeichnung aus der unmittelbaren Umgebung des Betriebsmittelkennzeichens oder Symbols, oft direkt darunter.
+- Wenn derselbe Verbraucher in einer Übersicht und im Schema vorkommt, gib ihn nur einmal aus der Schema-Fundstelle zurück.
 
 PDF-Text:
 {pdf_text[:max_chars]}
@@ -372,6 +779,9 @@ Jeder Verbraucher soll diese Felder haben:
 detection_id, page, identifier, designation, consumer_type, nominal_power_kw,
 nominal_current_a, voltage_v, cabinet, confidence, source_snippet.
 Erfinde keine Werte. Nutze null, wenn ein Wert nicht lesbar ist.
+Ignoriere Inhaltsverzeichnisse, Betriebsmittellisten, Klemmenpläne, Stücklisten,
+Geräteanordnungen und Übersichtstabellen. Nutze Verbraucher nur aus dem eigentlichen
+Stromlaufplan/Schaltplanschema und lies Bezeichnungen aus der unmittelbaren Symbolumgebung.
 """.strip(),
         }
     ]
@@ -410,25 +820,29 @@ def normalize_consumers(consumers: list[dict[str, Any]], source: str) -> list[di
         current_a = _to_float(item.get("nominal_current_a"))
         voltage_v = _to_float(item.get("voltage_v"))
         confidence = _to_float(item.get("confidence"))
+        designation = clean_designation(str(item.get("designation") or "Unbenannter Verbraucher"))
+        consumer_type = str(item.get("consumer_type") or "").strip()
+        if not consumer_type or consumer_type == "Unklar":
+            consumer_type = detect_consumer_type(designation)
         normalized.append(
             {
                 "detection_id": int(item.get("detection_id") or index),
                 "page": int(item.get("page") or 0),
                 "identifier": str(item.get("identifier") or "").strip(),
-                "designation": str(item.get("designation") or "Unbenannter Verbraucher").strip(),
-                "consumer_type": str(item.get("consumer_type") or "Unklar").strip(),
+                "designation": designation,
+                "consumer_type": consumer_type or "Unklar",
                 "nominal_power_kw": power_kw,
                 "nominal_current_a": current_a,
                 "voltage_v": voltage_v,
                 "cabinet": str(item.get("cabinet") or "").strip(),
                 "source": source,
-            "confidence": min(max(confidence if confidence is not None else 0.55, 0), 1),
-            "source_snippet": str(item.get("source_snippet") or "").strip()[:500],
-            "utilization_pct": _to_float(item.get("utilization_pct")),
-            "operating_time_pct": _to_float(item.get("operating_time_pct")),
-        }
+                "confidence": min(max(confidence if confidence is not None else 0.55, 0), 1),
+                "source_snippet": str(item.get("source_snippet") or "").strip()[:500],
+                "utilization_pct": _to_float(item.get("utilization_pct")),
+                "operating_time_pct": _to_float(item.get("operating_time_pct")),
+            }
         )
-    return normalized
+    return deduplicate_consumers(normalized)
 
 
 def analyze_circuit_pdf(
